@@ -2,16 +2,20 @@ import _ from 'lodash';
 
 import { recordBookEvent, checkIsMultipleRevealEvents, type BookEventHandlerMap } from 'utils-book';
 import { stateBet } from 'state-shared';
+import { BOOK_AMOUNT_MULTIPLIER } from 'constants-shared/bet';
 import config from './config';
 
 import { eventEmitter } from './eventEmitter';
 import { playBookEvent } from './utils';
-import { winLevelMap, type WinLevel, type WinLevelData } from './winLevelMap';
-import { stateGame, stateGameDerived } from './stateGame.svelte';
+import { winLevelMap, type WinLevelData } from './winLevelMap';
+import { stateGame, stateGameDerived, getWinLevelDataByWinLevelAlias } from './stateGame.svelte';
 import type { BookEvent, BookEventOfType, BookEventContext } from './typesBookEvent';
 import type { Position } from './types';
 
-const winLevelSoundsPlay = ({ winLevelData }: { winLevelData: WinLevelData }) => {
+// Fallback when a book emits an unrecognised `winLevel` string — render as "no win level".
+const WIN_LEVEL_NONE: WinLevelData = winLevelMap[1];
+
+const winLevelSoundsPlay = ({ winLevelData }: { winLevelData?: WinLevelData }) => {
 	if (winLevelData?.alias === 'max') eventEmitter.broadcastAsync({ type: 'uiHide' });
 	if (winLevelData?.sound?.sfx) {
 		eventEmitter.broadcast({ type: 'soundOnce', name: winLevelData.sound.sfx });
@@ -54,18 +58,11 @@ export const bookEventHandlerMap: BookEventHandlerMap<BookEvent, BookEventContex
 
 		stateGame.gameType = bookEvent.gameType;
 
-		// 10% fast-path check: resolve without slowdown if triggered
-		let revealEvent = bookEvent;
-		if (bookEvent.anticipation && bookEvent.anticipation.some((a) => a > 0)) {
-			if (Math.random() < 0.1) {
-				revealEvent = {
-					...bookEvent,
-					anticipation: bookEvent.anticipation.map(() => 0),
-				};
-			}
-		}
-
-		await stateGameDerived.enhancedBoard.spin({ revealEvent });
+		// The anticipation slow-down and its deterministic 10% skip are owned by the
+		// math engine (SHA-256 seeded, see math-sdk game_executables.check_anticipation_skip).
+		// The frontend renders `bookEvent.anticipation` verbatim — an all-zeros array
+		// is simply the fast-path and needs no special handling here.
+		await stateGameDerived.enhancedBoard.spin({ revealEvent: bookEvent });
 		eventEmitter.broadcast({ type: 'soundScatterCounterClear' });
 	},
 	winInfo: async (bookEvent: BookEventOfType<'winInfo'>) => {
@@ -156,7 +153,7 @@ export const bookEventHandlerMap: BookEventHandlerMap<BookEvent, BookEventContex
 		});
 	},
 	freeSpinEnd: async (bookEvent: BookEventOfType<'freeSpinEnd'>) => {
-		const winLevelData = winLevelMap[bookEvent.winLevel as WinLevel];
+		const winLevelData = getWinLevelDataByWinLevelAlias(bookEvent.winLevel) ?? WIN_LEVEL_NONE;
 
 		await eventEmitter.broadcastAsync({ type: 'uiHide' });
 		stateGame.gameType = 'basegame';
@@ -232,14 +229,17 @@ export const bookEventHandlerMap: BookEventHandlerMap<BookEvent, BookEventContex
 		eventEmitter.broadcast({ type: 'boardShow' });
 	},
 	setWin: async (bookEvent: BookEventOfType<'setWin'>) => {
-		const winLevelData = winLevelMap[bookEvent.winLevel as WinLevel];
-		const stakeCents = (stateBet.betAmount ?? 1) * 100;
+		const winLevelData = getWinLevelDataByWinLevelAlias(bookEvent.winLevel) ?? WIN_LEVEL_NONE;
+
+		// LDW (loss disguised as win): 0 < return <= 1x stake. Book event `amount` is
+		// already normalised so that BOOK_AMOUNT_MULTIPLIER (100) == 1x the wager,
+		// independent of bet size. Driven by config.celebrate_wins_below_stake = false.
 		const isLDW =
 			!config.celebrate_wins_below_stake &&
 			bookEvent.amount > 0 &&
-			bookEvent.amount <= stakeCents;
+			bookEvent.amount <= BOOK_AMOUNT_MULTIPLIER;
 
-		// When return <= stake, suppress win celebration and audio (LDW compliant)
+		// Suppress win celebration and all win audio; tumble visuals still play.
 		if (isLDW) {
 			return;
 		}
@@ -255,7 +255,10 @@ export const bookEventHandlerMap: BookEventHandlerMap<BookEvent, BookEventContex
 		eventEmitter.broadcast({ type: 'winHide' });
 	},
 	freeSpinRetrigger: async (bookEvent: BookEventOfType<'freeSpinRetrigger'>) => {
+		eventEmitter.broadcast({ type: 'soundOnce', name: 'sfx_scatter_win_v2' });
+		await animateSymbols({ positions: bookEvent.positions });
 		eventEmitter.broadcast({ type: 'soundOnce', name: 'sfx_superfreespin' });
+		// bump the remaining/total counter; `current` is left untouched mid-feature
 		eventEmitter.broadcast({
 			type: 'freeSpinCounterUpdate',
 			current: undefined,

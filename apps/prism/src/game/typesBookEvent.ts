@@ -1,6 +1,7 @@
 import type { BetType } from 'rgs-requests';
 
 import type { SymbolName, RawSymbol, GameType, Position } from './types';
+import type { WinLevelAlias } from './winLevelMap';
 
 type BookEventReveal = {
 	index: number;
@@ -64,19 +65,20 @@ type BookEventFreeSpinEnd = {
 	index: number;
 	type: 'freeSpinEnd';
 	amount: number;
-	winLevel: number;
+	winLevel: WinLevelAlias;
 };
 
 type BookEventFreeSpinRetrigger = {
 	index: number;
 	type: 'freeSpinRetrigger';
-	amount: number;
 	totalFs: number;
+	positions: Position[];
 };
 
 type BookEventWincap = {
 	index: number;
 	type: 'wincap';
+	amount: number;
 };
 
 type BookEventBoardMultiplierInfo = {
@@ -110,7 +112,7 @@ type BookEventSetWin = {
 	index: number;
 	type: 'setWin';
 	amount: number;
-	winLevel: number;
+	winLevel: WinLevelAlias;
 };
 
 // customised
